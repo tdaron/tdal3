@@ -1,0 +1,17 @@
+[package]
+name = "tdal3"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+
+[lib]
+name = "tdal3"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tdal3-cli"
+path = "src/bin.rs"
+
+[dependencies]
