@@ -25,7 +25,7 @@ impl Core {
         Core {
             result: 0,
             memory: [0; MEMORY_SIZE],
-            pc: 0,
+            pc: 0x3000,
             registers: [0; REGISTERS_COUNT],
             conditions_code: [false; 3],
             psr: 0,
@@ -67,13 +67,14 @@ impl Core {
         }
         return imm5;
     }
-    pub fn exec_instruction(&mut self, inst: u16) {
+    fn exec_instruction(&mut self, inst: u16) -> Result<(), ()> {
         let op: OpCode = (inst >> 12).into();
 
         // Common operands. Might not be interesting to compute for some instructions.
         // Put here for brievty
         let dr = get_bits!(inst, 9, 3);
 
+        self.pc += 1;
         match op {
             // ADD
             OpCode::ADD => {
@@ -92,6 +93,7 @@ impl Core {
 
                 self.result = self.registers[dr as usize];
                 self.setcc();
+                Ok(())
             }
             OpCode::AND => {
                 let sr1 = get_bits!(inst, 6, 3);
@@ -108,17 +110,35 @@ impl Core {
                 }
                 self.result = self.registers[dr as usize];
                 self.setcc();
+                Ok(())
             }
             OpCode::NOT => {
                 let sr = get_bits!(inst, 6, 3);
                 self.registers[dr as usize] = !self.registers[sr as usize];
                 self.result = self.registers[dr as usize];
                 self.setcc();
+                Ok(())
             }
-            _ => {
-                println!("Unimplemented opcode: {:?} ", op);
+            _ => Err(()),
+        }
+    }
+
+    pub fn load_obj(&mut self, obj: &[u16]) {
+        let location = obj[0] as usize;
+
+        let obj_data = &obj[1..];
+        let end = location + obj_data.len();
+        self.memory[location..end].copy_from_slice(obj_data);
+    }
+    pub fn run(&mut self) {
+        loop {
+            let instruction = self.memory[self.pc as usize];
+            match self.exec_instruction(instruction) {
+                Ok(()) => {}
+                Err(()) => break,
             }
         }
+        println!("Reached the end of the program.");
     }
 }
 
@@ -129,7 +149,7 @@ mod tests {
     pub fn test_init() {
         let c = Core::new();
         assert!(c.memory.len() == MEMORY_SIZE);
-        assert!(c.pc == 0);
+        assert!(c.pc == 0x3000);
         assert!(c.registers.len() == REGISTERS_COUNT);
     }
 
@@ -211,5 +231,15 @@ mod tests {
         let not = 0b1001_010_011_1_11111;
         c.exec_instruction(not);
         assert_eq!(c.registers[2], !67);
+    }
+
+    #[test]
+    pub fn test_load() {
+        //                             ORIG      ADD   R2  R7    7      ADD    R2  R2       R2
+        let basic_program: [u16; 3] = [0x3000, 0b0001_010_111_1_00111, 0b0001_010_010_0_00_010];
+        let mut c = Core::new();
+        c.load_obj(&basic_program);
+        c.run();
+        assert_eq!(c.registers[2], 14);
     }
 }
