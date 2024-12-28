@@ -51,7 +51,6 @@ impl Core {
     fn N(&self) -> bool {
         //TODO: Those registers should be set after
         // LD, LDI, LDR, LEA
-        // NOT
         return self.conditions_code[0];
     }
     fn Z(&self) -> bool {
@@ -70,10 +69,14 @@ impl Core {
     }
     pub fn exec_instruction(&mut self, inst: u16) {
         let op: OpCode = (inst >> 12).into();
+
+        // Common operands. Might not be interesting to compute for some instructions.
+        // Put here for brievty
+        let dr = get_bits!(inst, 9, 3);
+
         match op {
             // ADD
             OpCode::ADD => {
-                let dr = get_bits!(inst, 9, 3);
                 let sr1 = get_bits!(inst, 6, 3);
                 let im = get_bits!(inst, 5, 1);
                 // immediate mode
@@ -91,9 +94,9 @@ impl Core {
                 self.setcc();
             }
             OpCode::AND => {
-                let dr = get_bits!(inst, 9, 3);
                 let sr1 = get_bits!(inst, 6, 3);
                 let im = get_bits!(inst, 5, 1);
+
                 if im == 1 {
                     let imm5 = get_bits!(inst, 0, 5);
                     let n = self.extend_to_u16(imm5); // needed to handle negatives properly. imm5 as u16 would not
@@ -103,6 +106,12 @@ impl Core {
                     self.registers[dr as usize] =
                         self.registers[sr1 as usize] & self.registers[sr2 as usize];
                 }
+                self.result = self.registers[dr as usize];
+                self.setcc();
+            }
+            OpCode::NOT => {
+                let sr = get_bits!(inst, 6, 3);
+                self.registers[dr as usize] = !self.registers[sr as usize];
                 self.result = self.registers[dr as usize];
                 self.setcc();
             }
@@ -190,5 +199,17 @@ mod tests {
         assert_eq!(c.N(), false);
         assert_eq!(c.Z(), false);
         assert_eq!(c.P(), true);
+    }
+
+    #[test]
+    pub fn test_not() {
+        let mut c = Core::new();
+        c.registers[3] = 67;
+
+        //          NOT   R2  R3
+        //          R2 = ! R3
+        let not = 0b1001_010_011_1_11111;
+        c.exec_instruction(not);
+        assert_eq!(c.registers[2], !67);
     }
 }
