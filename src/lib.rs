@@ -1,5 +1,15 @@
+use opcode::OpCode;
+
+mod opcode;
 const MEMORY_SIZE: usize = 65536; // 2^16 memory locations
 const REGISTERS_COUNT: usize = 8;
+
+macro_rules! get_bits {
+    ($value:expr, $start:expr, $length:expr) => {
+        ($value >> $start) & ((1 << $length) - 1)
+    };
+}
+
 #[derive(Debug)]
 struct Core {
     memory: [u16; MEMORY_SIZE],
@@ -26,8 +36,8 @@ impl Core {
             self.conditions_code[0] = false; // N
             self.conditions_code[1] = true; // Z
             self.conditions_code[2] = false; // P
+            return;
         }
-        println!("Result: {}", self.result as i16);
         if self.result as i16 > 0 {
             self.conditions_code[0] = false; // N
             self.conditions_code[2] = true; // P
@@ -41,7 +51,7 @@ impl Core {
     fn N(&self) -> bool {
         //TODO: Those registers should be set after
         // LD, LDI, LDR, LEA
-        // ADD, AND, NOT
+        // NOT
         return self.conditions_code[0];
     }
     fn Z(&self) -> bool {
@@ -51,28 +61,28 @@ impl Core {
         return self.conditions_code[2];
     }
 
-    pub fn extend(&self, mut imm5: u16) -> u16 {
+    pub fn extend_to_u16(&self, mut imm5: u16) -> u16 {
         if (imm5 & 0b10000) != 0 {
             // negative number
             imm5 = imm5 | 0b1111_1111_1110_0000;
         }
         return imm5;
     }
-    pub fn exec_instruction(&mut self, instruction: u16) {
-        let opcode = instruction >> 12;
-        match opcode {
+    pub fn exec_instruction(&mut self, inst: u16) {
+        let op: OpCode = (inst >> 12).into();
+        match op {
             // ADD
-            0b001 => {
-                let dr = (instruction >> 9) & 0b111;
-                let sr1 = (instruction >> 6) & 0b111;
-                let im = (instruction >> 5) & 1;
+            OpCode::ADD => {
+                let dr = get_bits!(inst, 9, 3);
+                let sr1 = get_bits!(inst, 6, 3);
+                let im = get_bits!(inst, 5, 1);
                 // immediate mode
                 if im == 1 {
-                    let imm5 = (instruction) & 0b11111;
-                    let n = self.extend(imm5);
+                    let imm5 = get_bits!(inst, 0, 5);
+                    let n = self.extend_to_u16(imm5); // needed to handle negatives properly. imm5 as u16 would not.
                     self.registers[dr as usize] = self.registers[sr1 as usize].wrapping_add(n);
                 } else {
-                    let sr2 = (instruction) & 0b111;
+                    let sr2 = get_bits!(inst, 0, 3);
                     self.registers[dr as usize] =
                         self.registers[sr1 as usize].wrapping_add(self.registers[sr2 as usize]);
                 }
@@ -80,8 +90,24 @@ impl Core {
                 self.result = self.registers[dr as usize];
                 self.setcc();
             }
+            OpCode::AND => {
+                let dr = get_bits!(inst, 9, 3);
+                let sr1 = get_bits!(inst, 6, 3);
+                let im = get_bits!(inst, 5, 1);
+                if im == 1 {
+                    let imm5 = get_bits!(inst, 0, 5);
+                    let n = self.extend_to_u16(imm5); // needed to handle negatives properly. imm5 as u16 would not
+                    self.registers[dr as usize] = self.registers[sr1 as usize] & n;
+                } else {
+                    let sr2 = get_bits!(inst, 0, 3);
+                    self.registers[dr as usize] =
+                        self.registers[sr1 as usize] & self.registers[sr2 as usize];
+                }
+                self.result = self.registers[dr as usize];
+                self.setcc();
+            }
             _ => {
-                println!("Unexpected opcode: {} ", opcode);
+                println!("Unimplemented opcode: {:?} ", op);
             }
         }
     }
@@ -101,6 +127,7 @@ mod tests {
     #[test]
     pub fn test_add() {
         //          ADD  R2  R7  IM 7
+        //          R2 = R7 + 7
         let add_imm = 0b0001_010_111_1_00111;
         let mut c = Core::new();
         c.registers[7] = 3;
@@ -111,6 +138,7 @@ mod tests {
         assert_eq!(c.P(), true);
 
         //          ADD  R2  R2       R2
+        //          R2 = R2 + R2
         let add = 0b0001_010_010_0_00_010;
         c.exec_instruction(add);
         assert_eq!(c.registers[2], 20);
@@ -120,6 +148,7 @@ mod tests {
 
         // Test negatifs
         //          ADD  R2  R3      -5 = -16+11
+        //          R2 = R3 + (-5)
         let add = 0b0001_010_011_1_11011;
         c.registers[3] = 2;
         c.exec_instruction(add);
@@ -127,5 +156,39 @@ mod tests {
         assert_eq!(c.P(), false);
         assert_eq!(c.N(), true);
         assert_eq!(c.Z(), false);
+    }
+
+    #[test]
+    pub fn test_and() {
+        let mut c = Core::new();
+        c.registers[7] = 3;
+        c.registers[1] = 2;
+        //          AND   R0  R7       R1
+        //          R0 = R7 & R1
+        let and = 0b0101_000_111_0_00_001;
+
+        c.exec_instruction(and);
+        assert_eq!(c.registers[0], 3 & 2);
+        assert_eq!(c.N(), false);
+        assert_eq!(c.Z(), false);
+        assert_eq!(c.P(), true);
+
+        //              AND  R0   R7    5
+        //              R0 = R7 & 4
+        let and_imm = 0b0101_000_111_1_00100;
+        c.exec_instruction(and_imm);
+        assert_eq!(c.registers[0], 3 & 4);
+        assert_eq!(c.N(), false);
+        assert_eq!(c.Z(), true);
+        assert_eq!(c.P(), false);
+
+        //              AND  R0   R7    -5
+        //              R0 = R7 & -5
+        let and_imm = 0b0101_000_111_1_11011;
+        c.exec_instruction(and_imm);
+        assert_eq!(c.registers[0] as i16, 3 as i16 & (-5));
+        assert_eq!(c.N(), false);
+        assert_eq!(c.Z(), false);
+        assert_eq!(c.P(), true);
     }
 }
