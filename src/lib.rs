@@ -10,6 +10,17 @@ macro_rules! get_bits {
     };
 }
 
+macro_rules! extend_to_u16 {
+    ($imm:expr, $size:expr) => {{
+        let mask = 1 << ($size - 1);
+        if ($imm & mask) != 0 {
+            $imm | ((!0u16) << $size)
+        } else {
+            $imm
+        }
+    }};
+}
+
 #[derive(Debug)]
 struct Core {
     memory: [u16; MEMORY_SIZE],
@@ -60,13 +71,6 @@ impl Core {
         return self.conditions_code[2];
     }
 
-    pub fn extend_to_u16(&self, mut imm5: u16) -> u16 {
-        if (imm5 & 0b10000) != 0 {
-            // negative number
-            imm5 = imm5 | 0b1111_1111_1110_0000;
-        }
-        return imm5;
-    }
     fn exec_instruction(&mut self, inst: u16) -> Result<(), ()> {
         let op: OpCode = (inst >> 12).into();
 
@@ -74,8 +78,8 @@ impl Core {
         // Put here for brievty
         let dr = get_bits!(inst, 9, 3);
 
-        self.pc += 1;
-        match op {
+        let mut next_pc = self.pc + 1;
+        let res = match op {
             // ADD
             OpCode::ADD => {
                 let sr1 = get_bits!(inst, 6, 3);
@@ -83,7 +87,9 @@ impl Core {
                 // immediate mode
                 if im == 1 {
                     let imm5 = get_bits!(inst, 0, 5);
-                    let n = self.extend_to_u16(imm5); // needed to handle negatives properly. imm5 as u16 would not.
+                    println!("Value as bits: {:016b}, {}", imm5, imm5 as i16);
+                    let n = extend_to_u16!(imm5, 5); // needed to handle negatives properly. imm5 as u16 would not.
+                    println!("Value as bits: {:016b}, {}", n, n as i16);
                     self.registers[dr as usize] = self.registers[sr1 as usize].wrapping_add(n);
                 } else {
                     let sr2 = get_bits!(inst, 0, 3);
@@ -101,7 +107,7 @@ impl Core {
 
                 if im == 1 {
                     let imm5 = get_bits!(inst, 0, 5);
-                    let n = self.extend_to_u16(imm5); // needed to handle negatives properly. imm5 as u16 would not
+                    let n = extend_to_u16!(imm5, 5); // needed to handle negatives properly. imm5 as u16 would not
                     self.registers[dr as usize] = self.registers[sr1 as usize] & n;
                 } else {
                     let sr2 = get_bits!(inst, 0, 3);
@@ -119,8 +125,29 @@ impl Core {
                 self.setcc();
                 Ok(())
             }
+            OpCode::BR => {
+                let n = get_bits!(inst, 11, 1) == 1;
+                let z = get_bits!(inst, 10, 1) == 1;
+                let p = get_bits!(inst, 9, 1) == 1;
+                let pc_offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
+                if (n & self.N()) | (z & self.Z()) | (p & self.P()) {
+                    if (pc_offset as i16) < 0 {
+                        next_pc -= pc_offset;
+                    } else {
+                        next_pc += pc_offset;
+                    }
+                }
+                Ok(())
+            }
             _ => Err(()),
+        };
+        // if we reach the max value there must have been an error somewhere.
+        // probably the user not ending with HALT.
+        if self.pc == u16::MAX - 1 {
+            return Err(());
         }
+        self.pc = next_pc;
+        res
     }
 
     pub fn load_obj(&mut self, obj: &[u16]) {
@@ -160,7 +187,7 @@ mod tests {
         let add_imm = 0b0001_010_111_1_00111;
         let mut c = Core::new();
         c.registers[7] = 3;
-        c.exec_instruction(add_imm);
+        let _ = c.exec_instruction(add_imm);
         assert_eq!(c.registers[2], 10);
         assert_eq!(c.N(), false);
         assert_eq!(c.Z(), false);
@@ -169,7 +196,7 @@ mod tests {
         //          ADD  R2  R2       R2
         //          R2 = R2 + R2
         let add = 0b0001_010_010_0_00_010;
-        c.exec_instruction(add);
+        let _ = c.exec_instruction(add);
         assert_eq!(c.registers[2], 20);
         assert_eq!(c.P(), true);
         assert_eq!(c.N(), false);
@@ -180,7 +207,7 @@ mod tests {
         //          R2 = R3 + (-5)
         let add = 0b0001_010_011_1_11011;
         c.registers[3] = 2;
-        c.exec_instruction(add);
+        let _ = c.exec_instruction(add);
         assert_eq!(c.registers[2] as i16, -3);
         assert_eq!(c.P(), false);
         assert_eq!(c.N(), true);
@@ -196,7 +223,7 @@ mod tests {
         //          R0 = R7 & R1
         let and = 0b0101_000_111_0_00_001;
 
-        c.exec_instruction(and);
+        let _ = c.exec_instruction(and);
         assert_eq!(c.registers[0], 3 & 2);
         assert_eq!(c.N(), false);
         assert_eq!(c.Z(), false);
@@ -205,7 +232,7 @@ mod tests {
         //              AND  R0   R7    5
         //              R0 = R7 & 4
         let and_imm = 0b0101_000_111_1_00100;
-        c.exec_instruction(and_imm);
+        let _ = c.exec_instruction(and_imm);
         assert_eq!(c.registers[0], 3 & 4);
         assert_eq!(c.N(), false);
         assert_eq!(c.Z(), true);
@@ -214,7 +241,7 @@ mod tests {
         //              AND  R0   R7    -5
         //              R0 = R7 & -5
         let and_imm = 0b0101_000_111_1_11011;
-        c.exec_instruction(and_imm);
+        let _ = c.exec_instruction(and_imm);
         assert_eq!(c.registers[0] as i16, 3 as i16 & (-5));
         assert_eq!(c.N(), false);
         assert_eq!(c.Z(), false);
@@ -229,7 +256,7 @@ mod tests {
         //          NOT   R2  R3
         //          R2 = ! R3
         let not = 0b1001_010_011_1_11111;
-        c.exec_instruction(not);
+        let _ = c.exec_instruction(not);
         assert_eq!(c.registers[2], !67);
     }
 
@@ -241,5 +268,95 @@ mod tests {
         c.load_obj(&basic_program);
         c.run();
         assert_eq!(c.registers[2], 14);
+    }
+    #[test]
+    pub fn test_br() {
+        let basic_program: [u16; 4] = [
+            0x3000,
+            // ADD  R2  R7     7
+            0b0001_010_111_1_00111,
+            // BR      p         1  (if result is positive, skip next instruction) (will happen)
+            0b0000_0_0_1_000000001,
+            // ADD  R2  R2       R2
+            0b0001_010_010_0_00_010,
+        ];
+        let mut c = Core::new();
+        c.load_obj(&basic_program);
+        c.run();
+        assert_eq!(c.registers[2], 7);
+
+        let basic_program: [u16; 4] = [
+            0x3000,
+            // ADD  R2  R7     -2
+            0b0001_010_111_1_11110,
+            // BR      p         1  (if result is positive, skip next instruction) (will not happen)
+            0b0000_0_0_1_000000001,
+            // ADD  R2  R2       R2
+            0b0001_010_010_0_00_010,
+        ];
+        let mut c = Core::new();
+        c.load_obj(&basic_program);
+        c.run();
+
+        assert_eq!(c.registers[2] as i16, -4);
+        let basic_program: [u16; 4] = [
+            0x3000,
+            // ADD  R2  R7     -2
+            0b0001_010_111_1_11110,
+            // BR  n             1  (if result is negative, skip next instruction) (will happen)
+            0b0000_1_0_0_000000001,
+            // ADD  R2  R2       R2
+            0b0001_010_010_0_00_010,
+        ];
+        let mut c = Core::new();
+        c.load_obj(&basic_program);
+        c.run();
+        assert_eq!(c.registers[2] as i16, -2);
+
+        let basic_program: [u16; 4] = [
+            0x3000,
+            // ADD  R2  R7     2
+            0b0001_010_111_1_00010,
+            // BR  n             1  (if result is negative, skip next instruction) (will not happen)
+            0b0000_1_0_0_000000001,
+            // ADD  R2  R2       R2
+            0b0001_010_010_0_00_010,
+        ];
+        let mut c = Core::new();
+        c.load_obj(&basic_program);
+        c.run();
+        assert_eq!(c.registers[2] as i16, 4);
+
+        let basic_program: [u16; 5] = [
+            0x3000,
+            // ADD  R2  R7     0
+            0b0001_010_111_1_00000,
+            // BR    z          1  (if result is zero, skip next instruction) (will happen)
+            0b0000_0_1_0_000000001,
+            // ADD  R2  R2       2
+            0b0001_010_010_1_00010,
+            // ADD  R2  R2     10
+            0b0001_010_010_1_01010,
+        ];
+        let mut c = Core::new();
+        c.load_obj(&basic_program);
+        c.run();
+        assert_eq!(c.registers[2] as i16, 10);
+
+        let basic_program: [u16; 5] = [
+            0x3000,
+            // ADD  R2  R7     1
+            0b0001_010_111_1_00001,
+            // BR    z          1  (if result is zero, skip next instruction) (will not happen)
+            0b0000_0_1_0_000000001,
+            // ADD  R2  R2       2
+            0b0001_010_010_1_00010,
+            // ADD  R2  R2     10
+            0b0001_010_010_1_01010,
+        ];
+        let mut c = Core::new();
+        c.load_obj(&basic_program);
+        c.run();
+        assert_eq!(c.registers[2] as i16, 13);
     }
 }
