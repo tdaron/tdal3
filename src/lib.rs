@@ -22,7 +22,7 @@ macro_rules! extend_to_u16 {
 }
 
 #[derive(Debug)]
-struct Core {
+pub struct Core {
     memory: [u16; MEMORY_SIZE],
     pc: u16,
     registers: [u16; REGISTERS_COUNT],
@@ -60,8 +60,6 @@ impl Core {
         }
     }
     fn N(&self) -> bool {
-        //TODO: Those registers should be set after
-        // LD, LDI, LDR, LEA
         return self.conditions_code[0];
     }
     fn Z(&self) -> bool {
@@ -87,9 +85,7 @@ impl Core {
                 // immediate mode
                 if im == 1 {
                     let imm5 = get_bits!(inst, 0, 5);
-                    println!("Value as bits: {:016b}, {}", imm5, imm5 as i16);
                     let n = extend_to_u16!(imm5, 5); // needed to handle negatives properly. imm5 as u16 would not.
-                    println!("Value as bits: {:016b}, {}", n, n as i16);
                     self.registers[dr as usize] = self.registers[sr1 as usize].wrapping_add(n);
                 } else {
                     let sr2 = get_bits!(inst, 0, 3);
@@ -131,18 +127,14 @@ impl Core {
                 let p = get_bits!(inst, 9, 1) == 1;
                 let pc_offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
                 if (n & self.N()) | (z & self.Z()) | (p & self.P()) {
-                    if (pc_offset as i16) < 0 {
-                        next_pc -= pc_offset;
-                    } else {
-                        next_pc += pc_offset;
-                    }
+                    next_pc = self.pc.wrapping_add(pc_offset + 1);
                 }
                 Ok(())
             }
             OpCode::JMP => {
                 // RET is a special case of JMP with R7 as base_r
                 let base_r = get_bits!(inst, 6, 3);
-                next_pc = self.registers[base_r as usize];
+                next_pc = self.registers[base_r as usize] + 1;
                 Ok(())
             }
             OpCode::JSR => {
@@ -150,14 +142,41 @@ impl Core {
                 let is_offset = get_bits!(inst, 11, 1) == 1;
                 if is_offset {
                     let pc_offset = extend_to_u16!(get_bits!(inst, 0, 11), 11);
-                    if (pc_offset as i16) < 0 {
-                        next_pc -= pc_offset;
-                    } else {
-                        next_pc += pc_offset;
-                    }
+                    next_pc = self.pc.wrapping_add(pc_offset + 1);
                 } else {
                     self.pc = self.registers[get_bits!(inst, 6, 3) as usize]
                 }
+                Ok(())
+            }
+            OpCode::LD => {
+                let offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
+                let target_addr = self.pc.wrapping_add(offset + 1);
+                self.registers[dr as usize] = self.memory[target_addr as usize];
+                self.result = self.registers[dr as usize];
+                self.setcc();
+                Ok(())
+            }
+            OpCode::LDI => {
+                let offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
+                self.registers[dr as usize] =
+                    self.memory[self.memory[(self.pc.wrapping_add(offset + 1)) as usize] as usize];
+                self.result = self.registers[dr as usize];
+                self.setcc();
+                Ok(())
+            }
+            OpCode::LDR => {
+                let offset = extend_to_u16!(get_bits!(inst, 0, 6), 6);
+                let base_r = get_bits!(inst, 6, 3);
+                self.registers[dr as usize] = self.memory[base_r.wrapping_add(offset) as usize];
+                self.result = self.registers[dr as usize];
+                self.setcc();
+                Ok(())
+            }
+            OpCode::LEA => {
+                let offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
+                self.registers[dr as usize] = self.pc.wrapping_add(offset + 1);
+                self.result = self.registers[dr as usize];
+                self.setcc();
                 Ok(())
             }
             _ => Err(()),
@@ -187,6 +206,11 @@ impl Core {
             }
         }
         println!("Reached the end of the program.");
+    }
+    pub fn dump_registers(&mut self) {
+        for (i, r) in self.registers.iter().enumerate() {
+            println!("R{}: {}", i, *r as i16);
+        }
     }
 }
 
