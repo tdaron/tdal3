@@ -72,7 +72,7 @@ impl Core {
     }
 
     fn exec_instruction(&mut self, inst: u16) -> Result<(), ()> {
-        let op: OpCode = (inst >> 12).into();
+        let op: OpCode = (inst).into();
 
         // Common operands. Might not be interesting to compute for some instructions.
         // Put here for brievty
@@ -136,6 +136,27 @@ impl Core {
                     } else {
                         next_pc += pc_offset;
                     }
+                }
+                Ok(())
+            }
+            OpCode::JMP => {
+                // RET is a special case of JMP with R7 as base_r
+                let base_r = get_bits!(inst, 6, 3);
+                next_pc = self.registers[base_r as usize];
+                Ok(())
+            }
+            OpCode::JSR => {
+                self.registers[7] = self.pc;
+                let is_offset = get_bits!(inst, 11, 1) == 1;
+                if is_offset {
+                    let pc_offset = extend_to_u16!(get_bits!(inst, 0, 11), 11);
+                    if (pc_offset as i16) < 0 {
+                        next_pc -= pc_offset;
+                    } else {
+                        next_pc += pc_offset;
+                    }
+                } else {
+                    self.pc = self.registers[get_bits!(inst, 6, 3) as usize]
                 }
                 Ok(())
             }

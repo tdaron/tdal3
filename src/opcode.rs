@@ -20,7 +20,7 @@ pub enum OpCode {
 
 impl From<u16> for OpCode {
     fn from(value: u16) -> Self {
-        match value {
+        match value >> 12 {
             0b001 => OpCode::ADD,
             0b0101 => OpCode::AND,
             0b0000 => OpCode::BR,
