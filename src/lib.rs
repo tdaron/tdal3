@@ -179,6 +179,34 @@ impl Core {
                 self.setcc();
                 Ok(())
             }
+            OpCode::ST => {
+                let sr = get_bits!(inst, 9, 3);
+                let offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
+                self.memory[self.pc.wrapping_add(offset + 1) as usize] =
+                    self.registers[sr as usize];
+                Ok(())
+            }
+            OpCode::STI => {
+                let sr = get_bits!(inst, 9, 3);
+                let offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
+                self.memory[self.memory[self.pc.wrapping_add(offset + 1) as usize] as usize] =
+                    self.registers[sr as usize];
+                Ok(())
+            }
+            OpCode::STR => {
+                let sr = get_bits!(inst, 9, 3);
+                let base_r = get_bits!(inst, 6, 4);
+                let offset = extend_to_u16!(get_bits!(inst, 0, 6), 6);
+                self.memory[self.registers[base_r as usize].wrapping_add(offset) as usize] =
+                    self.registers[sr as usize];
+                Ok(())
+            }
+            OpCode::TRAP => {
+                let trapvect = get_bits!(inst, 0, 8);
+                self.registers[7] = self.pc + 1;
+                self.pc = self.memory[trapvect as usize];
+                Ok(())
+            }
             _ => Err(()),
         };
         // if we reach the max value there must have been an error somewhere.
