@@ -36,7 +36,7 @@ impl Core {
         Core {
             result: 0,
             memory: [0; MEMORY_SIZE],
-            pc: 0x3000,
+            pc: 0x0200,
             registers: [0; REGISTERS_COUNT],
             conditions_code: [false; 3],
             psr: 0,
@@ -207,6 +207,17 @@ impl Core {
                 self.pc = self.memory[trapvect as usize];
                 Ok(())
             }
+            OpCode::RTI => {
+                // should check if in priviledge mode. Don't care for now.
+                // R6 is the Stack Pointer
+                // Those two operations are like a "pop"
+                self.pc = self.memory[self.registers[6] as usize];
+                self.registers[6] = self.registers[6] + 1;
+                let tmp = self.registers[6];
+                self.registers[6] = self.registers[6] + 1;
+                self.psr = tmp;
+                Ok(())
+            }
             _ => Err(()),
         };
         // if we reach the max value there must have been an error somewhere.
@@ -249,7 +260,7 @@ mod tests {
     pub fn test_init() {
         let c = Core::new();
         assert!(c.memory.len() == MEMORY_SIZE);
-        assert!(c.pc == 0x3000);
+        assert!(c.pc == 0x0200);
         assert!(c.registers.len() == REGISTERS_COUNT);
     }
 
