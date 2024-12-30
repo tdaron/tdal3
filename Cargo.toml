@@ -2,16 +2,29 @@
 name = "tdal3"
 version = "0.1.0"
 edition = "2021"
-
+description="TDAL3 is a LC-3 implementation written in Rust. WASM compatible it's usable from anywhere."
+repository="https://github.com/tdaron/tdal3"
+license="MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 
 [lib]
 name = "tdal3"
 path = "src/lib.rs"
+crate-type = ["cdylib","lib"]
 
 [[bin]]
 name = "tdal3-cli"
 path = "src/bin.rs"
 
 [dependencies]
+js-sys = "0.3.76"
+wasm-bindgen = "0.2.99"
+
+[profile.release]
+# Optimize for smaller WASM size
+opt-level = "z" # Use the smallest optimization level
+lto = true       # Enable Link Time Optimization (LTO)
+panic = "abort"  # Remove unwinding code for smaller size
+codegen-units = 1 # Fewer codegen units may help with size
+strip = "debuginfo"  # Strip debug information for release builds

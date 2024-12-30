@@ -1,5 +1,6 @@
+use js_sys;
 use opcode::OpCode;
-
+use wasm_bindgen::prelude::*;
 mod opcode;
 const MEMORY_SIZE: usize = 65536; // 2^16 memory locations
 const REGISTERS_COUNT: usize = 8;
@@ -20,64 +21,70 @@ macro_rules! extend_to_u16 {
         }
     }};
 }
-
 #[derive(Debug)]
+#[wasm_bindgen]
 pub struct Core {
+    N: bool,
+    P: bool,
+    Z: bool,
     memory: [u16; MEMORY_SIZE],
-    pc: u16,
-    registers: [u16; REGISTERS_COUNT],
-    conditions_code: [bool; 3],
+    pub pc: u16,
     psr: u16,
+    registers: [u16; REGISTERS_COUNT],
     result: u16,
+    swap_sp: u16,
 }
 
+#[wasm_bindgen]
 impl Core {
+    #[wasm_bindgen(constructor)]
     pub fn new() -> Core {
-        Core {
+        let mut c = Core {
             result: 0,
             memory: [0; MEMORY_SIZE],
             pc: 0x0200,
             registers: [0; REGISTERS_COUNT],
-            conditions_code: [false; 3],
+            N: false,
+            Z: false,
+            P: false,
             psr: 0,
-        }
+            swap_sp: 0xFE00, //Initial value of User Stack Pointer
+        };
+        c.registers[6] = 0x3000; // Supervisor Stack Pointer
+        c
+    }
+    fn swap_stacks(&mut self) {
+        let b = self.registers[6];
+        self.registers[6] = self.swap_sp;
+        self.swap_sp = b;
     }
     fn setcc(&mut self) {
         if self.result == 0 {
-            self.conditions_code[0] = false; // N
-            self.conditions_code[1] = true; // Z
-            self.conditions_code[2] = false; // P
+            self.N = false; // N
+            self.Z = true; // Z
+            self.P = false; // P
             return;
         }
         if self.result as i16 > 0 {
-            self.conditions_code[0] = false; // N
-            self.conditions_code[2] = true; // P
-            self.conditions_code[1] = false // Z
+            self.N = false; // N
+            self.P = true; // P
+            self.Z = false // Z
         } else {
-            self.conditions_code[0] = true; // N
-            self.conditions_code[2] = false; // P
-            self.conditions_code[1] = false; // Z
+            self.N = true; // N
+            self.P = false; // P
+            self.Z = false; // Z
         }
     }
-    fn N(&self) -> bool {
-        return self.conditions_code[0];
-    }
-    fn Z(&self) -> bool {
-        return self.conditions_code[1];
-    }
-    fn P(&self) -> bool {
-        return self.conditions_code[2];
-    }
-
-    fn exec_instruction(&mut self, inst: u16) -> Result<(), ()> {
+    // Returns the address we have been reading data from. OR zero
+    fn exec_instruction(&mut self, inst: u16) -> u16 {
         let op: OpCode = (inst).into();
-
         // Common operands. Might not be interesting to compute for some instructions.
         // Put here for brievty
         let dr = get_bits!(inst, 9, 3);
 
         let mut next_pc = self.pc + 1;
-        let res = match op {
+        let mut address_read = 0;
+        match op {
             // ADD
             OpCode::ADD => {
                 let sr1 = get_bits!(inst, 6, 3);
@@ -95,7 +102,6 @@ impl Core {
 
                 self.result = self.registers[dr as usize];
                 self.setcc();
-                Ok(())
             }
             OpCode::AND => {
                 let sr1 = get_bits!(inst, 6, 3);
@@ -112,33 +118,29 @@ impl Core {
                 }
                 self.result = self.registers[dr as usize];
                 self.setcc();
-                Ok(())
             }
             OpCode::NOT => {
                 let sr = get_bits!(inst, 6, 3);
                 self.registers[dr as usize] = !self.registers[sr as usize];
                 self.result = self.registers[dr as usize];
                 self.setcc();
-                Ok(())
             }
             OpCode::BR => {
                 let n = get_bits!(inst, 11, 1) == 1;
                 let z = get_bits!(inst, 10, 1) == 1;
                 let p = get_bits!(inst, 9, 1) == 1;
                 let pc_offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
-                if (n & self.N()) | (z & self.Z()) | (p & self.P()) {
+                if (n & self.N) | (z & self.Z) | (p & self.P) {
                     next_pc = self.pc.wrapping_add(pc_offset + 1);
                 }
-                Ok(())
             }
             OpCode::JMP => {
                 // RET is a special case of JMP with R7 as base_r
                 let base_r = get_bits!(inst, 6, 3);
-                next_pc = self.registers[base_r as usize] + 1;
-                Ok(())
+                next_pc = self.registers[base_r as usize];
             }
             OpCode::JSR => {
-                self.registers[7] = self.pc;
+                self.registers[7] = self.pc + 1;
                 let is_offset = get_bits!(inst, 11, 1) == 1;
                 if is_offset {
                     let pc_offset = extend_to_u16!(get_bits!(inst, 0, 11), 11);
@@ -146,66 +148,58 @@ impl Core {
                 } else {
                     self.pc = self.registers[get_bits!(inst, 6, 3) as usize]
                 }
-                Ok(())
             }
             OpCode::LD => {
                 let offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
-                let target_addr = self.pc.wrapping_add(offset + 1);
-                self.registers[dr as usize] = self.memory[target_addr as usize];
+                address_read = self.pc.wrapping_add(offset + 1);
+                self.registers[dr as usize] = self.memory[address_read as usize];
                 self.result = self.registers[dr as usize];
                 self.setcc();
-                Ok(())
             }
             OpCode::LDI => {
                 let offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
-                self.registers[dr as usize] =
-                    self.memory[self.memory[(self.pc.wrapping_add(offset + 1)) as usize] as usize];
+                address_read = self.memory[self.pc.wrapping_add(offset + 1) as usize];
+                self.registers[dr as usize] = self.memory[address_read as usize];
                 self.result = self.registers[dr as usize];
                 self.setcc();
-                Ok(())
             }
             OpCode::LDR => {
                 let offset = extend_to_u16!(get_bits!(inst, 0, 6), 6);
                 let base_r = get_bits!(inst, 6, 3);
-                self.registers[dr as usize] = self.memory[base_r.wrapping_add(offset) as usize];
+                address_read = self.registers[base_r as usize].wrapping_add(offset);
+                self.registers[dr as usize] = self.memory[address_read as usize];
                 self.result = self.registers[dr as usize];
                 self.setcc();
-                Ok(())
             }
             OpCode::LEA => {
                 let offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
                 self.registers[dr as usize] = self.pc.wrapping_add(offset + 1);
                 self.result = self.registers[dr as usize];
                 self.setcc();
-                Ok(())
             }
             OpCode::ST => {
                 let sr = get_bits!(inst, 9, 3);
                 let offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
                 self.memory[self.pc.wrapping_add(offset + 1) as usize] =
                     self.registers[sr as usize];
-                Ok(())
             }
             OpCode::STI => {
                 let sr = get_bits!(inst, 9, 3);
                 let offset = extend_to_u16!(get_bits!(inst, 0, 9), 9);
                 self.memory[self.memory[self.pc.wrapping_add(offset + 1) as usize] as usize] =
                     self.registers[sr as usize];
-                Ok(())
             }
             OpCode::STR => {
                 let sr = get_bits!(inst, 9, 3);
-                let base_r = get_bits!(inst, 6, 4);
+                let base_r = get_bits!(inst, 6, 3);
                 let offset = extend_to_u16!(get_bits!(inst, 0, 6), 6);
                 self.memory[self.registers[base_r as usize].wrapping_add(offset) as usize] =
                     self.registers[sr as usize];
-                Ok(())
             }
             OpCode::TRAP => {
                 let trapvect = get_bits!(inst, 0, 8);
                 self.registers[7] = self.pc + 1;
                 self.pc = self.memory[trapvect as usize];
-                Ok(())
             }
             OpCode::RTI => {
                 // should check if in priviledge mode. Don't care for now.
@@ -216,17 +210,11 @@ impl Core {
                 let tmp = self.registers[6];
                 self.registers[6] = self.registers[6] + 1;
                 self.psr = tmp;
-                Ok(())
             }
-            _ => Err(()),
+            _ => (),
         };
-        // if we reach the max value there must have been an error somewhere.
-        // probably the user not ending with HALT.
-        if self.pc == u16::MAX - 1 {
-            return Err(());
-        }
         self.pc = next_pc;
-        res
+        address_read
     }
 
     pub fn load_obj(&mut self, obj: &[u16]) {
@@ -235,20 +223,63 @@ impl Core {
         let obj_data = &obj[1..];
         let end = location + obj_data.len();
         self.memory[location..end].copy_from_slice(obj_data);
+        println!(
+            "Loaded {} bytes at address {:#x}",
+            obj_data.len() * 2,
+            location
+        );
     }
-    pub fn run(&mut self) {
-        loop {
-            let instruction = self.memory[self.pc as usize];
-            match self.exec_instruction(instruction) {
-                Ok(()) => {}
-                Err(()) => break,
-            }
-        }
-        println!("Reached the end of the program.");
+    // Returns the address that has been read from.
+    pub fn step(&mut self) -> u16 {
+        let instruction = self.memory[self.pc as usize];
+        let read_address = self.exec_instruction(instruction);
+        read_address
     }
+    pub fn interrupt(&mut self, interrupt: u16) {
+        // Load R6 with Supervisor Stack Pointer
+        self.swap_stacks();
+
+        self.registers[6] -= 2; // Reserving two spaces on the stack to store the PC AND PSR
+        self.memory[self.registers[6] as usize] = self.pc;
+        self.memory[self.registers[6] as usize + 1] = self.psr;
+        // PSR and PC pushed onto SSP
+
+        self.pc = self.memory[interrupt as usize]
+        //TODO: Set privilege to Supervisor Mode
+        //TODO: Set priority to level 4
+    }
+    pub fn registers_clone(&self) -> Vec<u16> {
+        self.registers.into()
+    }
+    pub fn memory_clone(&self) -> Vec<u16> {
+        self.memory.into()
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub unsafe fn memory_view(&self) -> js_sys::Uint16Array {
+        js_sys::Uint16Array::view(&self.memory)
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub unsafe fn registers_view(&self) -> js_sys::Uint16Array {
+        js_sys::Uint16Array::view(&self.registers)
+    }
+
+    // Getters from usage within WASM
+    pub fn N(&self) -> bool {
+        self.N
+    }
+    pub fn Z(&self) -> bool {
+        self.Z
+    }
+    pub fn P(&self) -> bool {
+        self.P
+    }
+    pub fn pc(&self) -> u16 {
+        self.pc
+    }
+
     pub fn dump_registers(&mut self) {
         for (i, r) in self.registers.iter().enumerate() {
-            println!("R{}: {}", i, *r as i16);
+            println!("R{}: {}\r", i, *r as i16);
         }
     }
 }
@@ -273,18 +304,18 @@ mod tests {
         c.registers[7] = 3;
         let _ = c.exec_instruction(add_imm);
         assert_eq!(c.registers[2], 10);
-        assert_eq!(c.N(), false);
-        assert_eq!(c.Z(), false);
-        assert_eq!(c.P(), true);
+        assert_eq!(c.N, false);
+        assert_eq!(c.Z, false);
+        assert_eq!(c.P, true);
 
         //          ADD  R2  R2       R2
         //          R2 = R2 + R2
         let add = 0b0001_010_010_0_00_010;
         let _ = c.exec_instruction(add);
         assert_eq!(c.registers[2], 20);
-        assert_eq!(c.P(), true);
-        assert_eq!(c.N(), false);
-        assert_eq!(c.Z(), false);
+        assert_eq!(c.P, true);
+        assert_eq!(c.N, false);
+        assert_eq!(c.Z, false);
 
         // Test negatifs
         //          ADD  R2  R3      -5 = -16+11
@@ -293,9 +324,9 @@ mod tests {
         c.registers[3] = 2;
         let _ = c.exec_instruction(add);
         assert_eq!(c.registers[2] as i16, -3);
-        assert_eq!(c.P(), false);
-        assert_eq!(c.N(), true);
-        assert_eq!(c.Z(), false);
+        assert_eq!(c.P, false);
+        assert_eq!(c.N, true);
+        assert_eq!(c.Z, false);
     }
 
     #[test]
@@ -309,27 +340,27 @@ mod tests {
 
         let _ = c.exec_instruction(and);
         assert_eq!(c.registers[0], 3 & 2);
-        assert_eq!(c.N(), false);
-        assert_eq!(c.Z(), false);
-        assert_eq!(c.P(), true);
+        assert_eq!(c.N, false);
+        assert_eq!(c.Z, false);
+        assert_eq!(c.P, true);
 
         //              AND  R0   R7    5
         //              R0 = R7 & 4
         let and_imm = 0b0101_000_111_1_00100;
         let _ = c.exec_instruction(and_imm);
         assert_eq!(c.registers[0], 3 & 4);
-        assert_eq!(c.N(), false);
-        assert_eq!(c.Z(), true);
-        assert_eq!(c.P(), false);
+        assert_eq!(c.N, false);
+        assert_eq!(c.Z, true);
+        assert_eq!(c.P, false);
 
         //              AND  R0   R7    -5
         //              R0 = R7 & -5
         let and_imm = 0b0101_000_111_1_11011;
         let _ = c.exec_instruction(and_imm);
         assert_eq!(c.registers[0] as i16, 3 as i16 & (-5));
-        assert_eq!(c.N(), false);
-        assert_eq!(c.Z(), false);
-        assert_eq!(c.P(), true);
+        assert_eq!(c.N, false);
+        assert_eq!(c.Z, false);
+        assert_eq!(c.P, true);
     }
 
     #[test]
@@ -347,16 +378,20 @@ mod tests {
     #[test]
     pub fn test_load() {
         //                             ORIG      ADD   R2  R7    7      ADD    R2  R2       R2
-        let basic_program: [u16; 3] = [0x3000, 0b0001_010_111_1_00111, 0b0001_010_010_0_00_010];
+        let basic_program: [u16; 3] = [0x0200, 0b0001_010_111_1_00111, 0b0001_010_010_0_00_010];
         let mut c = Core::new();
         c.load_obj(&basic_program);
-        c.run();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
         assert_eq!(c.registers[2], 14);
     }
     #[test]
     pub fn test_br() {
         let basic_program: [u16; 4] = [
-            0x3000,
+            0x0200,
             // ADD  R2  R7     7
             0b0001_010_111_1_00111,
             // BR      p         1  (if result is positive, skip next instruction) (will happen)
@@ -366,11 +401,16 @@ mod tests {
         ];
         let mut c = Core::new();
         c.load_obj(&basic_program);
-        c.run();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
         assert_eq!(c.registers[2], 7);
 
         let basic_program: [u16; 4] = [
-            0x3000,
+            0x0200,
             // ADD  R2  R7     -2
             0b0001_010_111_1_11110,
             // BR      p         1  (if result is positive, skip next instruction) (will not happen)
@@ -380,11 +420,16 @@ mod tests {
         ];
         let mut c = Core::new();
         c.load_obj(&basic_program);
-        c.run();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
 
         assert_eq!(c.registers[2] as i16, -4);
         let basic_program: [u16; 4] = [
-            0x3000,
+            0x0200,
             // ADD  R2  R7     -2
             0b0001_010_111_1_11110,
             // BR  n             1  (if result is negative, skip next instruction) (will happen)
@@ -394,11 +439,17 @@ mod tests {
         ];
         let mut c = Core::new();
         c.load_obj(&basic_program);
-        c.run();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+
         assert_eq!(c.registers[2] as i16, -2);
 
         let basic_program: [u16; 4] = [
-            0x3000,
+            0x0200,
             // ADD  R2  R7     2
             0b0001_010_111_1_00010,
             // BR  n             1  (if result is negative, skip next instruction) (will not happen)
@@ -408,11 +459,17 @@ mod tests {
         ];
         let mut c = Core::new();
         c.load_obj(&basic_program);
-        c.run();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
         assert_eq!(c.registers[2] as i16, 4);
 
         let basic_program: [u16; 5] = [
-            0x3000,
+            0x0200,
             // ADD  R2  R7     0
             0b0001_010_111_1_00000,
             // BR    z          1  (if result is zero, skip next instruction) (will happen)
@@ -424,11 +481,20 @@ mod tests {
         ];
         let mut c = Core::new();
         c.load_obj(&basic_program);
-        c.run();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
         assert_eq!(c.registers[2] as i16, 10);
 
         let basic_program: [u16; 5] = [
-            0x3000,
+            0x0200,
             // ADD  R2  R7     1
             0b0001_010_111_1_00001,
             // BR    z          1  (if result is zero, skip next instruction) (will not happen)
@@ -440,7 +506,15 @@ mod tests {
         ];
         let mut c = Core::new();
         c.load_obj(&basic_program);
-        c.run();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
+        c.step();
         assert_eq!(c.registers[2] as i16, 13);
     }
 }

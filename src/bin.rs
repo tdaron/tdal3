@@ -4,7 +4,6 @@ use std::io::Read;
 use std::process;
 
 use tdal3::Core;
-
 fn main() {
     // Get the file path from the command-line arguments
     let args: Vec<String> = env::args().collect();
@@ -44,6 +43,8 @@ fn main() {
 
     let mut c = Core::new();
     c.load_obj(&u16_vec);
-    c.run();
+    while c.pc != u16::MAX - 1 {
+        c.step();
+    }
     c.dump_registers();
 }
