@@ -1,7 +1,8 @@
 use opcode::OpCode;
 use wasm_bindgen::prelude::*;
+pub mod assemble;
 mod opcode;
-pub mod parser;
+mod parser;
 #[cfg(target_arch = "wasm32")]
 use js_sys;
 
