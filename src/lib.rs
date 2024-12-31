@@ -1,7 +1,10 @@
-use js_sys;
 use opcode::OpCode;
 use wasm_bindgen::prelude::*;
 mod opcode;
+pub mod parser;
+#[cfg(target_arch = "wasm32")]
+use js_sys;
+
 const MEMORY_SIZE: usize = 65536; // 2^16 memory locations
 const REGISTERS_COUNT: usize = 8;
 

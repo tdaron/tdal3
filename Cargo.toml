@@ -19,6 +19,7 @@ path = "src/bin.rs"
 
 [dependencies]
 js-sys = "0.3.76"
+nom = "7.1.3"
 wasm-bindgen = "0.2.99"
 
 [profile.release]
